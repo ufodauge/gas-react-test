@@ -1,0 +1,35 @@
+{
+  "name": "gas-react-test",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "bundle": "node ./scripts/build.js",
+    "build": "tsc && vite build && npm run bundle",
+    "copy:appsscript": "node -e \"require('fs').cpSync('./src/appsscript.json', './dist/appsscript.json')\"",
+    "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
+    "preview": "vite preview",
+    "push": "npm run build && npm run copy:appsscript && clasp push"
+  },
+  "dependencies": {
+    "esbuild-gas-plugin": "^0.8.0",
+    "gas-client": "^1.1.1",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
+  },
+  "devDependencies": {
+    "@types/google-apps-script": "^1.0.77",
+    "@types/react": "^18.2.37",
+    "@types/react-dom": "^18.2.15",
+    "@typescript-eslint/eslint-plugin": "^6.10.0",
+    "@typescript-eslint/parser": "^6.10.0",
+    "@vitejs/plugin-react": "^4.2.0",
+    "eslint": "^8.53.0",
+    "eslint-plugin-react-hooks": "^4.6.0",
+    "eslint-plugin-react-refresh": "^0.4.4",
+    "typescript": "^5.2.2",
+    "vite": "^5.0.0",
+    "vite-plugin-singlefile": "^0.13.5"
+  }
+}
