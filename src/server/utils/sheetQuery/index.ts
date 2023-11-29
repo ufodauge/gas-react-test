@@ -1,108 +1,177 @@
-/* eslint-disable @typescript-eslint/no-unused-vars */
-import { ToActualType } from "@/types/utils";
+import { Err, Ok } from "@/utils/result";
 import {
-    SheetSchemaTemplate,
+    ColumnTypes,
     SheetQueryConfig,
     createQueryConfig,
-    SheetQueryConfigs,
 } from "./createQueryConfig";
+import { ToActualType } from "./types/utils";
+import { SheetValueType } from "./types/sheetValue";
 
-type SheetSchema<Template extends SheetSchemaTemplate> = {
-    [key in keyof Template]: ToActualType<Template[key]>;
+type SheetRecord<Types extends ColumnTypes> = {
+    [key in keyof Types]: ToActualType<Types[key]>;
 };
 
-type SheetQuery<Template extends SheetSchemaTemplate> = {
-    select: <Header extends keyof Template>(
-        ...headers: Header[] | ["*"]
-    ) => SheetSchema<Pick<Template, (typeof headers)[number]>>[];
-    // append: (...rows: SheetSchema<Template>[]) => void;
-    // delete: (selector: (rows: SheetSchema<Template>) => boolean) => void;
-    // update: () => void;
+type SheetQuery<Types extends ColumnTypes> = {
+    /**
+     * Read all records from the sheet.
+     * @returns An array of all records in the sheet.
+     */
+    read(): ReadonlyArray<SheetRecord<Types>>;
+
+    /**
+     * Replace all records in the sheet.
+     * @param records Records to be set.
+     */
+    set(...records: SheetRecord<Types>[]): void;
+
+    /**
+     * Append records at the bottom of the sheet.
+     * @param records Records to be appended.
+     */
+    append(...records: SheetRecord<Types>[]): void;
+
+    /**
+     * Delete records based on the specified condition.
+     * @param condition A function that returns true if the record should be deleted.
+     *                  Records satisfying this condition will be removed from the sheet.
+     */
+    delete(condition: (record: SheetRecord<Types>) => boolean): void;
 };
 
-type SheetQueryConfigs<Templates extends readonly SheetSchemaTemplate[]> = {
+type SheetQueryConfigs<Templates extends readonly ColumnTypes[]> = {
     readonly [key in keyof Templates]: SheetQueryConfig<Templates[key]>;
 };
 
-type SheetQueries<Templates extends readonly SheetSchemaTemplate[]> = {
+const deriveSheetDataById = (
+    sheets: GoogleAppsScript.Spreadsheet.Sheet[],
+    id: number
+) => {
+    const sheet = sheets.find((s) => s.getSheetId() === id);
+    if (sheet === undefined) {
+        throw new Error(`There's no sheet of id ${id}`);
+    }
+
+    const sheetValues = sheet.getDataRange().getValues();
+
+    const headers = sheetValues.slice(0, 1)[0];
+    const values = sheetValues.slice(1);
+
+    if (headers.some((h) => typeof h !== "string")) {
+        throw new Error(
+            `Some of the headers is not string` +
+                `(${headers.join(", ")}, sheet id: ${id})`
+        );
+    }
+
+    return { headers, values };
+};
+
+const getHeaderIndices = <Types extends ColumnTypes>(
+    headers: string[],
+    columnType: Types
+) => {
+    return headers.reduce<{
+        [key in keyof Types]: keyof typeof headers;
+    }>(
+        (acc, h, i) => {
+            if (columnType[h] !== undefined) {
+                return { ...acc, [h]: i };
+            }
+            throw new Error(`Unknown column name: "${h}"`);
+        },
+        {} as {
+            [key in keyof Types]: keyof typeof headers;
+        }
+    );
+};
+
+const createRecords = <Types extends ColumnTypes>(
+    values: SheetValueType[][],
+    headers: string[],
+    headerIndices: { [key in keyof Types]: keyof string[] }
+): ReadonlyArray<SheetRecord<Types>> => {
+    return values.map((row) => {
+        return headers.reduce((acc, h, i) => {
+            return { ...acc, [h]: row[headerIndices[i]] };
+        }, {} as SheetRecord<Types>);
+    });
+};
+
+const createSheetQuery = <Types extends ColumnTypes>(
+    config: SheetQueryConfig<Types>,
+    sheets: GoogleAppsScript.Spreadsheet.Sheet[]
+): SheetQuery<Types> => {
+    const { id, columnType } = config;
+
+    const { headers, values } = deriveSheetDataById(sheets, id);
+
+    const headerIndices = getHeaderIndices(headers, columnType);
+
+    let records = createRecords(values, headers, headerIndices);
+
+    return {
+        read: () => records,
+        set: (...args: SheetRecord<Types>[]) => {
+            records = args.slice();
+        },
+        append: (...args: SheetRecord<Types>[]) => {
+            records = [...records, ...args];
+        },
+        delete: (condition: (record: SheetRecord<Types>) => boolean) => {
+            records = records.filter((record) => !condition(record));
+        },
+    };
+};
+
+type SheetQueries<Templates extends readonly ColumnTypes[]> = {
     readonly [key in keyof Templates]: SheetQuery<Templates[key]>;
 };
 
-const createSheetQuery = <Templates extends readonly SheetSchemaTemplate[]>(
-    ...config: SheetQueryConfigs<Templates>
+const createSheetQueries = <Templates extends readonly ColumnTypes[]>(
+    ...configs: SheetQueryConfigs<Templates>
 ): SheetQueries<Templates> => {
-    const data = SpreadsheetApp.getActive()
-        .getSheets()
-        .reduce((acc, sheet) => {
-            const id = sheet.getSheetId();
+    const sheets = SpreadsheetApp.getActive().getSheets();
+    const queries = configs.reduce((qs, c, i) => {
+        return { ...qs, [i]: createSheetQuery(c, sheets) };
+    }, {} as SheetQueries<Templates>);
 
-            
-
-            // if (config.find((w) => w.id === id)) {
-            //     return 
-            // }
-
-            throw new Error(`There's no sheet of id ${id}`);
-        });
-
-    // const headers = data.slice(0, 1)[0];
-    // // eslint-disable-next-line prefer-const
-    // let values = data.slice(1);
-    // const columnIndices: { [key in keyof Template]: number } = headers.reduce(
-    //     (acc, h, i) => {
-    //         if (Object.hasOwn(config.template, h)) {
-    //             return { ...acc, [h]: i };
-    //         }
-    //         throw new Error(`Unknown column name: ${h}`);
-    //     },
-    //     {}
-    // );
-    // const select = <Headers extends (keyof Template)[]>(
-    //     ...args: Headers | ["*"]
-    // ): SheetSchema<Pick<Template, (typeof args)[number]>>[] =>
-    //     values.map((row) =>
-    //         args[0] === "*"
-    //             ? headers.reduce((acc, header) => {
-    //                   return { ...acc, [header]: row[columnIndices[header]] };
-    //               }, {} as SheetSchema<Template>)
-    //             : args.reduce((acc, header) => {
-    //                   return { ...acc, [header]: row[columnIndices[header]] };
-    //               }, {} as SheetSchema<Pick<Template, (typeof args)[number]>>)
-    //     );
-    // const append = (...rows: SheetSchema<Template>[]) =>
-    //     values.push(
-    //         rows.map((row) =>
-    //             Object.entries(row).reduce((acc, [k, v]) => {
-    //                 acc[columnIndices[k]] = v;
-    //                 return acc;
-    //             }, [] as unknown[])
-    //         )
-    //     );
-    // const del = (selector: (rows: SheetSchema<Template>) => boolean) => {
-    //     // values = values.filter(v => selector());
-    // };
-
-    throw new Error("TODO");
-    // return {
-    //     select,
-    //     append,
-    //     delete: del,
-    // } as const;
+    return queries;
 };
 
-export const _useSheetQuery = async <
-    Templates extends readonly SheetSchemaTemplate[]
->(
-    proc: (query: SheetQueries<Templates>) => void,
-    ...configs: SheetQueryConfigs<Templates>
-) => {
-    // Lock
-    const queries = createSheetQuery<{
-        readonly [key in keyof Templates]: Templates[key];
-    }>(...configs);
+const lock = LockService.getScriptLock();
 
-    proc(queries);
-    // Unlock
+export const _useSheetQuery = async <Templates extends readonly ColumnTypes[]>(
+    proc: (query: SheetQueries<Templates>) => void,
+    configs: SheetQueryConfigs<Templates>,
+    options?: Partial<{
+        timeouts: number;
+    }>
+) => {
+    const defaultOptions = {
+        timeouts: 5000,
+    };
+    options = options ?? defaultOptions;
+    options.timeouts = options.timeouts ?? defaultOptions.timeouts;
+
+    try {
+        lock.waitLock(options.timeouts);
+
+        const queries = createSheetQueries<{
+            readonly [key in keyof Templates]: Templates[key];
+        }>(...configs);
+
+        proc(queries);
+    } catch (error) {
+        if (error instanceof Error) {
+            console.error(error);
+            return Err(error);
+        }
+        return Err(new Error(`${error}`));
+    } finally {
+        lock.releaseLock();
+    }
+
+    return Ok(undefined);
 };
 
 // example
@@ -116,7 +185,7 @@ const userQueryConfig = createQueryConfig(USER_SHEET_ID, {
     ["Group ID"]: "string",
     ["Name"]: "string",
     ["Age"]: "number",
-    ["IsEmployed"]: "boolean",
+    ["Is Employed"]: "boolean",
 });
 
 const groupQueryConfig = createQueryConfig(GROUP_SHEET_ID, {
@@ -125,20 +194,29 @@ const groupQueryConfig = createQueryConfig(GROUP_SHEET_ID, {
     ["Ave. Grades"]: "number",
 });
 
-const _result = await _useSheetQuery(
-    ({ [USER_SHEET_ID]: user, [GROUP_SHEET_ID]: group }) => {
-        // const data = query.select("UUID", "Age");
-        // data.forEach((v) => {
-        //     // `v["User Name"]` cannot be accessible.
-        //     console.log(`id: ${v.UUID}, age: ${v.Age}`);
-        // });
-        // query.append({
-        //     ["UUID"]: "abcdefgh",
-        //     ["User Name"]: "foo bar",
-        //     ["Age"]: 24,
-        // });
+await _useSheetQuery(
+    ([user, group]) => {
+        const userData = user.read();
+
+        userData.forEach((v) => {
+            console.log(v["Name"], v["Age"]);
+        });
+
+        group.set({
+            ["Group ID"]: "0123",
+            ["Name"]: "aaa",
+            ["Ave. Grades"]: 1,
+        });
+
+        group.append({
+            ["Group ID"]: "1234",
+            ["Name"]: "bbb",
+            ["Ave. Grades"]: 2,
+        });
+
+        group.delete((r) => r["Ave. Grades"] > 1);
     },
-    [userQueryConfig, groupQueryConfig]
+    [userQueryConfig, groupQueryConfig] as const
 );
 
 /**
@@ -154,8 +232,8 @@ const _result = await _useSheetQuery(
  * // this automatically lock spreadsheet.
  * const result = await useSheetQuery(USER_SHEET_CONFIG, async (query) => {
  *   const data: { ["UUID"]: string, ["Age"]: number }[]
- *     = await query.select("UUID", "Age");
- *   const dataAll = await query.select();
+ *     = await query.read("UUID", "Age");
+ *   const dataAll = await query.read();
  *   await query.append([
  *     { ["UUID"]: "abcdefgh", ["User Name"]: "foo bar", ["Age"]: 24 },
  *   ]);

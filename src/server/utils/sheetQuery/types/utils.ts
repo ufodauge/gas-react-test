@@ -68,5 +68,3 @@ export type Merge<
     : Acc;
 
 export type ValueOf<T> = T[keyof T];
-
-// export type 

@@ -1,16 +1,15 @@
-import { TypeName } from "@/types/utils";
+import { TypeName } from "./types/utils";
 
-export type SheetSchemaTemplate = { readonly [key: string]: TypeName };
+export type ColumnTypes = { readonly [key: string]: TypeName };
 
-export type SheetQueryConfig<Template extends SheetSchemaTemplate> = {
+export type SheetQueryConfig<ColumnType extends ColumnTypes> = {
     id: number;
-    template: Template;
+    columnType: ColumnType;
 };
 
-export const createQueryConfig = <Template extends SheetSchemaTemplate>(
+export const createQueryConfig = <ColumnType extends ColumnTypes>(
     id: number,
-    template: Template
+    columnType: ColumnType
 ) => {
-    return { id, template } as SheetQueryConfig<Template>;
+    return { id, columnType } as SheetQueryConfig<ColumnType>;
 };
-
