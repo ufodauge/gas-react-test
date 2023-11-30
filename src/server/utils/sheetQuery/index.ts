@@ -1,48 +1,23 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { Err, Ok } from "@/utils/result";
-import {
-    ColumnTypes,
-    SheetQueryConfig,
-    createQueryConfig,
-} from "./createQueryConfig";
-import { ToActualType } from "./types/utils";
+import { ToActualType, TypeName } from "./types/utils";
 import { SheetValueType } from "./types/sheetValue";
 
-type SheetRecord<Types extends ColumnTypes> = {
-    [key in keyof Types]: ToActualType<Types[key]>;
+type ColumnTypes = { readonly [key: string]: TypeName };
+
+type SheetQueryConfig<CTs extends ColumnTypes> = {
+    id: number;
+    columnTypes: CTs;
 };
 
-type SheetQuery<Types extends ColumnTypes> = {
-    /**
-     * Read all records from the sheet.
-     * @returns An array of all records in the sheet.
-     */
-    read(): ReadonlyArray<SheetRecord<Types>>;
-
-    /**
-     * Replace all records in the sheet.
-     * @param records Records to be set.
-     */
-    set(...records: SheetRecord<Types>[]): void;
-
-    /**
-     * Append records at the bottom of the sheet.
-     * @param records Records to be appended.
-     */
-    append(...records: SheetRecord<Types>[]): void;
-
-    /**
-     * Delete records based on the specified condition.
-     * @param condition A function that returns true if the record should be deleted.
-     *                  Records satisfying this condition will be removed from the sheet.
-     */
-    delete(condition: (record: SheetRecord<Types>) => boolean): void;
+const createQueryConfig = <CTs extends ColumnTypes>(
+    id: number,
+    columnTypes: CTs
+) => {
+    return { id, columnTypes } as SheetQueryConfig<CTs>;
 };
 
-type SheetQueryConfigs<Templates extends readonly ColumnTypes[]> = {
-    readonly [key in keyof Templates]: SheetQueryConfig<Templates[key]>;
-};
-
-const deriveSheetDataById = (
+const getSheetDataRangeById = (
     sheets: GoogleAppsScript.Spreadsheet.Sheet[],
     id: number
 ) => {
@@ -51,74 +26,153 @@ const deriveSheetDataById = (
         throw new Error(`There's no sheet of id ${id}`);
     }
 
-    const sheetValues = sheet.getDataRange().getValues();
+    const range = sheet.getDataRange();
+    return range;
+};
+
+const deriveSheetDataById = (range: GoogleAppsScript.Spreadsheet.Range) => {
+    const sheetValues = range.getValues();
 
     const headers = sheetValues.slice(0, 1)[0];
     const values = sheetValues.slice(1);
 
     if (headers.some((h) => typeof h !== "string")) {
         throw new Error(
-            `Some of the headers is not string` +
-                `(${headers.join(", ")}, sheet id: ${id})`
+            `Some of the headers is not string (${headers.join(", ")})`
         );
     }
 
     return { headers, values };
 };
 
-const getHeaderIndices = <Types extends ColumnTypes>(
-    headers: string[],
-    columnType: Types
-) => {
-    return headers.reduce<{
-        [key in keyof Types]: keyof typeof headers;
-    }>(
-        (acc, h, i) => {
-            if (columnType[h] !== undefined) {
-                return { ...acc, [h]: i };
-            }
-            throw new Error(`Unknown column name: "${h}"`);
-        },
-        {} as {
-            [key in keyof Types]: keyof typeof headers;
+type ColumnIndex<CTs extends ColumnTypes, Headers extends readonly string[]> = {
+    [key in keyof CTs]: keyof Headers;
+};
+
+const getColumnIndices = <
+    CTs extends ColumnTypes,
+    Headers extends readonly string[]
+>(
+    headers: Headers,
+    columnType: CTs
+): ColumnIndex<CTs, Headers> => {
+    return headers.reduce((acc, h, i) => {
+        if (columnType[h] !== undefined) {
+            return { ...acc, [h]: i };
         }
+        throw new Error(`Unknown column name: "${h}"`);
+    }, {} as ColumnIndex<CTs, Headers>);
+};
+
+const createRecordIO = <
+    CTs extends ColumnTypes,
+    Headers extends readonly string[]
+>(
+    values: readonly any[][],
+    columnIndices: ColumnIndex<CTs, Headers>
+): [SheetRecordReader<CTs>, SheetRecordWriter<CTs>] => {
+    let raw = values.slice();
+
+    const getter = <Key extends keyof CTs>(
+        row: (typeof raw)[number],
+        key: Key
+    ): ToActualType<CTs[Key]> => {
+        return row[columnIndices[key] as keyof typeof row];
+    };
+
+    const reader = raw.map(
+        (row) =>
+            <Key extends keyof CTs>(key: Key) =>
+                getter(row, key)
     );
+
+    const writer = (...records: SheetRecord<CTs>[]) => {
+        raw = records.map((r) =>
+            Object.entries(r).reduce((acc, [k, v]) => {
+                acc[columnIndices[k] as number] = v;
+            }, [] as any[])
+        );
+    };
+
+    return [reader, writer];
 };
 
-const createRecords = <Types extends ColumnTypes>(
-    values: SheetValueType[][],
-    headers: string[],
-    headerIndices: { [key in keyof Types]: keyof string[] }
-): ReadonlyArray<SheetRecord<Types>> => {
-    return values.map((row) => {
-        return headers.reduce((acc, h, i) => {
-            return { ...acc, [h]: row[headerIndices[i]] };
-        }, {} as SheetRecord<Types>);
-    });
+type SheetRecordReader<CTs extends ColumnTypes> = ReadonlyArray<
+    <Key extends keyof CTs>(key: Key) => ToActualType<CTs[Key]>
+>;
+
+type SheetRecordWriter<CTs extends ColumnTypes> = (
+    ...records: SheetRecord<CTs>[]
+) => void;
+
+type SheetRecord<CTs extends ColumnTypes> = {
+    [key in keyof CTs]: ToActualType<CTs[key]>;
 };
 
-const createSheetQuery = <Types extends ColumnTypes>(
-    config: SheetQueryConfig<Types>,
+type SheetQuery<CTs extends ColumnTypes> = {
+    /**
+     * Read all records from the sheet.
+     * @returns An array of all records in the sheet.
+     */
+    read(): ReadonlyArray<SheetRecordReader<CTs>>;
+
+    /**
+     * Replace all records in the sheet.
+     * @param records Records to be set.
+     */
+    set(...records: SheetRecord<CTs>[]): void;
+
+    /**
+     * Append records at the bottom of the sheet.
+     * @param records Records to be appended.
+     */
+    append(...records: SheetRecord<CTs>[]): void;
+
+    /**
+     * Delete records based on the specified condition.
+     * @param condition A function that returns true if the record should be deleted.
+     *                  Records satisfying this condition will be removed from the sheet.
+     */
+    delete(condition: (record: Readonly<SheetRecord<CTs>>) => boolean): void;
+
+    /**
+     * Reflect data onto sheet.
+     */
+    reflect(): void;
+};
+
+type SheetQueryConfigs<Templates extends readonly ColumnTypes[]> = {
+    readonly [key in keyof Templates]: SheetQueryConfig<Templates[key]>;
+};
+
+const createSheetQuery = <CTs extends ColumnTypes>(
+    config: SheetQueryConfig<CTs>,
     sheets: GoogleAppsScript.Spreadsheet.Sheet[]
-): SheetQuery<Types> => {
-    const { id, columnType } = config;
+): SheetQuery<CTs> => {
+    const { id, columnTypes } = config;
 
-    const { headers, values } = deriveSheetDataById(sheets, id);
+    const range = getSheetDataRangeById(sheets, id);
+    const { headers, values } = deriveSheetDataById(range);
 
-    const headerIndices = getHeaderIndices(headers, columnType);
+    const columnIndices = getColumnIndices(headers, columnTypes);
 
-    let records = createRecords(values, headers, headerIndices);
+    const [reader, writer] = createRecordIO(values, columnIndices);
 
     return {
-        read: () => records,
-        set: (...args: SheetRecord<Types>[]) => {
-            records = args.slice();
+        read: () => reader,
+        set: (...args: readonly SheetRecord<CTs>[]) => {
+            reader = args.slice();
         },
-        append: (...args: SheetRecord<Types>[]) => {
-            records = [...records, ...args];
+        append: (...args: readonly SheetRecord<CTs>[]) => {
+            reader = [...reader, ...args];
         },
-        delete: (condition: (record: SheetRecord<Types>) => boolean) => {
-            records = records.filter((record) => !condition(record));
+        delete: (
+            condition: (record: Readonly<SheetRecord<CTs>>) => boolean
+        ) => {
+            reader = reader.filter((record) => !condition(record));
+        },
+        reflect: () => {
+            range.setValues([...headers, ...raw]);
         },
     };
 };
@@ -128,9 +182,9 @@ type SheetQueries<Templates extends readonly ColumnTypes[]> = {
 };
 
 const createSheetQueries = <Templates extends readonly ColumnTypes[]>(
-    ...configs: SheetQueryConfigs<Templates>
+    configs: SheetQueryConfigs<Templates>,
+    sheets: GoogleAppsScript.Spreadsheet.Sheet[]
 ): SheetQueries<Templates> => {
-    const sheets = SpreadsheetApp.getActive().getSheets();
     const queries = configs.reduce((qs, c, i) => {
         return { ...qs, [i]: createSheetQuery(c, sheets) };
     }, {} as SheetQueries<Templates>);
@@ -140,7 +194,7 @@ const createSheetQueries = <Templates extends readonly ColumnTypes[]>(
 
 const lock = LockService.getScriptLock();
 
-export const _useSheetQuery = async <Templates extends readonly ColumnTypes[]>(
+export const useSheetQuery = async <Templates extends readonly ColumnTypes[]>(
     proc: (query: SheetQueries<Templates>) => void,
     configs: SheetQueryConfigs<Templates>,
     options?: Partial<{
@@ -149,16 +203,17 @@ export const _useSheetQuery = async <Templates extends readonly ColumnTypes[]>(
 ) => {
     const defaultOptions = {
         timeouts: 5000,
-    };
+    } as const;
     options = options ?? defaultOptions;
     options.timeouts = options.timeouts ?? defaultOptions.timeouts;
 
     try {
         lock.waitLock(options.timeouts);
 
+        const sheets = SpreadsheetApp.getActive().getSheets();
         const queries = createSheetQueries<{
             readonly [key in keyof Templates]: Templates[key];
-        }>(...configs);
+        }>(configs, sheets);
 
         proc(queries);
     } catch (error) {
@@ -194,12 +249,12 @@ const groupQueryConfig = createQueryConfig(GROUP_SHEET_ID, {
     ["Ave. Grades"]: "number",
 });
 
-await _useSheetQuery(
+await useSheetQuery(
     ([user, group]) => {
         const userData = user.read();
 
         userData.forEach((v) => {
-            console.log(v["Name"], v["Age"]);
+            console.log(v.get("Name"), v.get("Age"));
         });
 
         group.set({
@@ -214,7 +269,7 @@ await _useSheetQuery(
             ["Ave. Grades"]: 2,
         });
 
-        group.delete((r) => r["Ave. Grades"] > 1);
+        group.delete((r) => r.get("Ave. Grades") > 1);
     },
     [userQueryConfig, groupQueryConfig] as const
 );
@@ -223,21 +278,47 @@ await _useSheetQuery(
  * ```ts
  * import { createQueryConfig, userSheetQuery } from "spread-sheet-query"
  *
- * const USER_SHEET_CONFIG = createQueryConfig<{
- *   ["UUID"]: string,
- *   ["User Name"]: string,
- *   ["Age"]: number
- * }>(12345678);
+ * const USER_SHEET_ID = 1000;
+ * const GROUP_SHEET_ID = 2000;
  *
- * // this automatically lock spreadsheet.
- * const result = await useSheetQuery(USER_SHEET_CONFIG, async (query) => {
- *   const data: { ["UUID"]: string, ["Age"]: number }[]
- *     = await query.read("UUID", "Age");
- *   const dataAll = await query.read();
- *   await query.append([
- *     { ["UUID"]: "abcdefgh", ["User Name"]: "foo bar", ["Age"]: 24 },
- *   ]);
+ * const userQueryConfig = createQueryConfig(USER_SHEET_ID, {
+ *     ["User ID"]: "string",
+ *     ["Group ID"]: "string",
+ *     ["Name"]: "string",
+ *     ["Age"]: "number",
+ *     ["Is Employed"]: "boolean",
  * });
+ *
+ * const groupQueryConfig = createQueryConfig(GROUP_SHEET_ID, {
+ *     ["Group ID"]: "string",
+ *     ["Name"]: "string",
+ *     ["Ave. Grades"]: "number",
+ * });
+ *
+ * await useSheetQuery(
+ *     ([user, group]) => {
+ *         const userData = user.read();
+ *
+ *         userData.forEach((v) => {
+ *             console.log(v["Name"], v["Age"]);
+ *         });
+ *
+ *         group.set({
+ *             ["Group ID"]: "0123",
+ *             ["Name"]: "aaa",
+ *             ["Ave. Grades"]: 1,
+ *         });
+ *
+ *         group.append({
+ *             ["Group ID"]: "1234",
+ *             ["Name"]: "bbb",
+ *             ["Ave. Grades"]: 2,
+ *         });
+ *
+ *         group.delete((r) => r["Ave. Grades"] > 1);
+ *     },
+ *     [userQueryConfig, groupQueryConfig] as const
+ * );
  * ```
  */
 const SpreadSheetQuery = {};
