@@ -83,13 +83,13 @@ type SheetQuery<CTs extends ColumnTypes> = {
 
 type SheetQueries<
     CTsArray extends ReadonlyArray<ColumnTypes>,
-    _Configs = readonly SheetQueryConfig<ColumnTypes>[]
+    _Queries = ReadonlyArray<SheetQuery<ColumnTypes>>
 > = CTsArray extends [
     infer First extends ColumnTypes,
     ...infer Rest extends ReadonlyArray<ColumnTypes>
 ]
-    ? SheetQueries<Rest, [_Configs, SheetQuery<First>]>
-    : _Configs;
+    ? SheetQueries<Rest, [_Queries, SheetQuery<First>]>
+    : _Queries;
 
 const createQueryConfig = <CTs extends ColumnTypes>(
     id: number,
@@ -185,7 +185,10 @@ const createSheetQuery = <
 const lock = LockService.getScriptLock();
 const sheets = SpreadsheetApp.getActive().getSheets();
 
-export const useSheetQuery = async <T, CTsArray extends ColumnTypes>(
+export const useSheetQuery = async <
+    T,
+    CTsArray extends ReadonlyArray<ColumnTypes>
+>(
     proc: (query: SheetQueries<CTsArray>) => T,
     configs: SheetQueryConfigs<CTsArray>,
     options?: Partial<{
@@ -201,7 +204,7 @@ export const useSheetQuery = async <T, CTsArray extends ColumnTypes>(
     try {
         lock.waitLock(options.timeouts);
 
-        const queries: SheetQueries<CTs> = configs.map((config) =>
+        const queries: SheetQueries<CTsArray> = configs.map((config) =>
             createSheetQuery(config, sheets)
         );
 
@@ -237,51 +240,40 @@ const groupQueryConfig = createQueryConfig(GROUP_SHEET_ID, [
     { name: "Ave. Grades", type: "number" },
 ] as const);
 
-const a = <CTsArray extends ReadonlyArray<ColumnTypes>>(
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    _: SheetQueryConfigs<CTsArray>
-) => {};
-
 const bundle = [userQueryConfig, groupQueryConfig] as const;
-
-a(bundle);
-
 // eslint-disable-next-line react-hooks/rules-of-hooks
-await useSheetQuery(
-    ([user, group]) => {
-        user.read().forEach((v) => {
-            console.log(v["Name"], v["Age"]);
-        });
+await useSheetQuery(([user, group]) => {
+    user.read().forEach((v) => {
+        console.log(v["Name"], v["Age"]);
+    });
 
-        group.set([
-            {
-                ["Group ID"]: "0123",
-                ["Name"]: "aaa",
-                ["Ave. Grades"]: 1,
-            },
-            {
-                ["Group ID"]: "4567",
-                ["Name"]: "bbb",
-                ["Ave. Grades"]: 6,
-            },
-        ]);
+    group.set([
+        {
+            ["Group ID"]: "0123",
+            ["Name"]: "aaa",
+            ["Ave. Grades"]: 1,
+        },
+        {
+            ["Group ID"]: "4567",
+            ["Name"]: "bbb",
+            ["Ave. Grades"]: 6,
+        },
+    ]);
 
-        group.append([
-            {
-                ["Group ID"]: "1234",
-                ["Name"]: "bbb",
-                ["Ave. Grades"]: 2,
-            },
-        ]);
+    group.append([
+        {
+            ["Group ID"]: "1234",
+            ["Name"]: "bbb",
+            ["Ave. Grades"]: 2,
+        },
+    ]);
 
-        group.deleteIf((v) => v["Ave. Grades"] > 1);
+    group.deleteIf((v) => v["Ave. Grades"] > 1);
 
-        group.commit();
+    group.commit();
 
-        return user.read().map((v) => [v["Name"], v["Age"]] as const);
-    },
-    [userQueryConfig, groupQueryConfig] as const
-);
+    return user.read().map((v) => [v["Name"], v["Age"]] as const);
+}, bundle);
 
 /**
  * ```ts
