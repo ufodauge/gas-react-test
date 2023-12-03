@@ -50,9 +50,9 @@ export type Entries<T> = (keyof T extends infer U
     : never)[];
 
 export type Merge<
-    ObjArr extends object[],
+    ObjArr extends readonly object[],
     Acc extends object = NonNullable<unknown>
-> = ObjArr extends [infer First, ...infer Rests extends object[]]
+> = ObjArr extends [infer First, ...infer Rests extends readonly object[]]
     ? First extends object
         ? Merge<
               Rests,

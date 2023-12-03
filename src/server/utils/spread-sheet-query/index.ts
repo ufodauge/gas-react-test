@@ -1,7 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { Err, Ok } from "@/utils/result";
 import { ToActualType, TypeName } from "./types/utils";
-import { SheetValueType } from "./types/sheetValue";
 
 type ColumnTypes = { readonly [key: string]: TypeName };
 
@@ -64,13 +63,29 @@ const getColumnIndices = <
     }, {} as ColumnIndex<CTs, Headers>);
 };
 
+const recordIntoRawValues = <
+    CTs extends ColumnTypes,
+    Headers extends readonly string[]
+>(
+    record: SheetRecord<CTs>,
+    columnIndices: ColumnIndex<CTs, Headers>
+) =>
+    Object.entries(record).reduce((acc, [k, v]) => {
+        acc[columnIndices[k] as number] = v;
+        return acc;
+    }, [] as any[]);
+
 const createRecordIO = <
     CTs extends ColumnTypes,
     Headers extends readonly string[]
 >(
-    values: readonly any[][],
+    values: ReadonlyArray<ReadonlyArray<any>>,
     columnIndices: ColumnIndex<CTs, Headers>
-): [SheetRecordReader<CTs>, SheetRecordWriter<CTs>] => {
+): {
+    getRaw: () => ReadonlyArray<ReadonlyArray<any>>;
+    read: SheetRecordReader<CTs>;
+    write: SheetRecordWriter<CTs>;
+} => {
     let raw = values.slice();
 
     const getter = <Key extends keyof CTs>(
@@ -80,29 +95,45 @@ const createRecordIO = <
         return row[columnIndices[key] as keyof typeof row];
     };
 
-    const reader = raw.map(
-        (row) =>
-            <Key extends keyof CTs>(key: Key) =>
-                getter(row, key)
-    );
-
-    const writer = (...records: SheetRecord<CTs>[]) => {
-        raw = records.map((r) =>
-            Object.entries(r).reduce((acc, [k, v]) => {
-                acc[columnIndices[k] as number] = v;
-            }, [] as any[])
+    const read = () =>
+        raw.map(
+            (row) =>
+                <Key extends keyof CTs>(key: Key) =>
+                    getter(row, key)
         );
+
+    const write = (
+        base: ReadonlyArray<ReadonlyArray<any>>,
+        records: readonly SheetRecord<CTs>[]
+    ) => {
+        raw = [
+            ...base,
+            ...records.map((r) => recordIntoRawValues(r, columnIndices)),
+        ];
     };
 
-    return [reader, writer];
+    return { getRaw: () => raw, read, write };
 };
 
-type SheetRecordReader<CTs extends ColumnTypes> = ReadonlyArray<
-    <Key extends keyof CTs>(key: Key) => ToActualType<CTs[Key]>
+type FakeRecord<CTs extends ColumnTypes> = <Key extends keyof CTs>(
+    key: Key
+) => ToActualType<CTs[Key]>;
+
+const fakeRecordIntoRecord = <CTs extends ColumnTypes>(
+    fake: FakeRecord<CTs>,
+    columnTypes: CTs
+): SheetRecord<CTs> =>
+    Object.keys(columnTypes).reduce((acc, k) => {
+        return { ...acc, [k]: fake(k) };
+    }, {} as SheetRecord<CTs>);
+
+type SheetRecordReader<CTs extends ColumnTypes> = () => ReadonlyArray<
+    FakeRecord<CTs>
 >;
 
 type SheetRecordWriter<CTs extends ColumnTypes> = (
-    ...records: SheetRecord<CTs>[]
+    raw: ReadonlyArray<ReadonlyArray<any>>,
+    records: readonly SheetRecord<CTs>[]
 ) => void;
 
 type SheetRecord<CTs extends ColumnTypes> = {
@@ -114,26 +145,26 @@ type SheetQuery<CTs extends ColumnTypes> = {
      * Read all records from the sheet.
      * @returns An array of all records in the sheet.
      */
-    read(): ReadonlyArray<SheetRecordReader<CTs>>;
+    read(): SheetRecordReader<CTs>;
 
     /**
      * Replace all records in the sheet.
      * @param records Records to be set.
      */
-    set(...records: SheetRecord<CTs>[]): void;
+    set(records: SheetRecord<CTs>[]): void;
 
     /**
      * Append records at the bottom of the sheet.
      * @param records Records to be appended.
      */
-    append(...records: SheetRecord<CTs>[]): void;
+    append(records: SheetRecord<CTs>[]): void;
 
     /**
      * Delete records based on the specified condition.
      * @param condition A function that returns true if the record should be deleted.
      *                  Records satisfying this condition will be removed from the sheet.
      */
-    delete(condition: (record: Readonly<SheetRecord<CTs>>) => boolean): void;
+    delete(condition: (record: FakeRecord<CTs>) => boolean): void;
 
     /**
      * Reflect data onto sheet.
@@ -156,23 +187,24 @@ const createSheetQuery = <CTs extends ColumnTypes>(
 
     const columnIndices = getColumnIndices(headers, columnTypes);
 
-    const [reader, writer] = createRecordIO(values, columnIndices);
+    const { getRaw, read, write } = createRecordIO(values, columnIndices);
 
     return {
-        read: () => reader,
-        set: (...args: readonly SheetRecord<CTs>[]) => {
-            reader = args.slice();
+        read: () => read,
+        set: (args: readonly SheetRecord<CTs>[]) => {
+            write([], args);
         },
-        append: (...args: readonly SheetRecord<CTs>[]) => {
-            reader = [...reader, ...args];
+        append: (args: readonly SheetRecord<CTs>[]) => {
+            write(getRaw(), args);
         },
-        delete: (
-            condition: (record: Readonly<SheetRecord<CTs>>) => boolean
-        ) => {
-            reader = reader.filter((record) => !condition(record));
+        delete: (condition: (record: FakeRecord<CTs>) => boolean) => {
+            const records = read()
+                .filter((r) => !condition(r))
+                .map((r) => fakeRecordIntoRecord(r, columnTypes));
+            write([], records);
         },
         reflect: () => {
-            range.setValues([...headers, ...raw]);
+            range.setValues([headers, ...(getRaw() as any[])]);
         },
     };
 };
@@ -249,34 +281,39 @@ const groupQueryConfig = createQueryConfig(GROUP_SHEET_ID, {
     ["Ave. Grades"]: "number",
 });
 
+// eslint-disable-next-line react-hooks/rules-of-hooks
 await useSheetQuery(
     ([user, group]) => {
         const userData = user.read();
 
-        userData.forEach((v) => {
-            console.log(v.get("Name"), v.get("Age"));
+        userData().forEach((v) => {
+            console.log(v("Name"), v("Age"));
         });
 
-        group.set({
-            ["Group ID"]: "0123",
-            ["Name"]: "aaa",
-            ["Ave. Grades"]: 1,
-        });
+        group.set([
+            {
+                ["Group ID"]: "0123",
+                ["Name"]: "aaa",
+                ["Ave. Grades"]: 1,
+            },
+        ]);
 
-        group.append({
-            ["Group ID"]: "1234",
-            ["Name"]: "bbb",
-            ["Ave. Grades"]: 2,
-        });
+        group.append([
+            {
+                ["Group ID"]: "1234",
+                ["Name"]: "bbb",
+                ["Ave. Grades"]: 2,
+            },
+        ]);
 
-        group.delete((r) => r.get("Ave. Grades") > 1);
+        group.delete((v) => v("Ave. Grades") > 1);
     },
     [userQueryConfig, groupQueryConfig] as const
 );
 
 /**
  * ```ts
- * import { createQueryConfig, userSheetQuery } from "spread-sheet-query"
+ * import { createQueryConfig, useSheetQuery } from "spread-sheet-query"
  *
  * const USER_SHEET_ID = 1000;
  * const GROUP_SHEET_ID = 2000;
@@ -298,29 +335,36 @@ await useSheetQuery(
  * await useSheetQuery(
  *     ([user, group]) => {
  *         const userData = user.read();
- *
- *         userData.forEach((v) => {
- *             console.log(v["Name"], v["Age"]);
+ * 
+ *         userData().forEach((v) => {
+ *             console.log(v("Name"), v("Age"));
  *         });
- *
- *         group.set({
- *             ["Group ID"]: "0123",
- *             ["Name"]: "aaa",
- *             ["Ave. Grades"]: 1,
- *         });
- *
- *         group.append({
- *             ["Group ID"]: "1234",
- *             ["Name"]: "bbb",
- *             ["Ave. Grades"]: 2,
- *         });
- *
- *         group.delete((r) => r["Ave. Grades"] > 1);
+ * 
+ *         group.set([
+ *             {
+ *                 ["Group ID"]: "0123",
+ *                 ["Name"]: "aaa",
+ *                 ["Ave. Grades"]: 1,
+ *             },
+ *         ]);
+ * 
+ *         group.append([
+ *             {
+ *                 ["Group ID"]: "1234",
+ *                 ["Name"]: "bbb",
+ *                 ["Ave. Grades"]: 2,
+ *             },
+ *         ]);
+ * 
+ *         group.delete((v) => v("Ave. Grades") > 1);
  *     },
  *     [userQueryConfig, groupQueryConfig] as const
  * );
  * ```
  */
-const SpreadSheetQuery = {};
+const SpreadSheetQuery = {
+    createQueryConfig,
+    useSheetQuery,
+};
 
 export default SpreadSheetQuery;
