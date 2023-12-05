@@ -1,4 +1,4 @@
-import { Err, Ok } from "@/utils/result";
+import { Err, Ok, Result } from "@/utils/result";
 import { Merge, ToActualType, TypeName } from "./types/utils";
 
 type SheetValue = boolean | number | string | Date;
@@ -6,35 +6,62 @@ type SheetHeader = string;
 
 type DataTable = readonly (readonly SheetValue[])[];
 
-type ColumnType = Readonly<{
-    name: SheetHeader;
-    type: TypeName;
-}>;
-type ColumnTypes = ReadonlyArray<ColumnType>;
+type ColumnType<Header extends SheetHeader, Name extends TypeName> = {
+    readonly name: Header;
+    readonly type: Name;
+};
 
-type SheetQueryConfig<CTs extends ColumnTypes> = Readonly<{
-    id: number;
-    columnTypes: CTs;
-}>;
+type ColumnTypes<
+    CTArray extends readonly ColumnType<SheetHeader, TypeName>[],
+    _Result extends readonly ColumnType<SheetHeader, TypeName>[] = []
+> = CTArray extends [
+    infer First extends ColumnType<SheetHeader, TypeName>,
+    ...infer Rest extends readonly ColumnType<SheetHeader, TypeName>[]
+]
+    ? ColumnTypes<Rest, [..._Result, First]>
+    : _Result;
+
+type SheetQueryConfig<
+    CTArray extends readonly ColumnType<SheetHeader, TypeName>[],
+    _Result extends readonly ColumnType<SheetHeader, TypeName>[] = readonly []
+> = CTArray extends [
+    infer First extends ColumnType<SheetHeader, TypeName>,
+    ...infer Rest extends readonly ColumnType<SheetHeader, TypeName>[]
+]
+    ? ColumnTypes<Rest, [..._Result, First]>
+    : {
+          readonly id: number;
+          readonly columnTypes: _Result;
+      };
 
 type SheetQueryConfigs<
-    CTsArray extends ReadonlyArray<ColumnTypes>,
-    _Configs = readonly SheetQueryConfig<ColumnTypes>[]
+    CTsArray extends readonly ColumnTypes<
+        readonly ColumnType<SheetHeader, TypeName>[]
+    >[],
+    _Result extends readonly SheetQueryConfig<
+        ColumnTypes<readonly ColumnType<SheetHeader, TypeName>[]>
+    >[] = readonly []
 > = CTsArray extends [
-    infer First extends ColumnTypes,
-    ...infer Rest extends ReadonlyArray<ColumnTypes>
+    infer First extends ColumnTypes<
+        readonly ColumnType<SheetHeader, TypeName>[]
+    >,
+    ...infer Rest extends readonly ColumnTypes<
+        readonly ColumnType<SheetHeader, TypeName>[]
+    >[]
 ]
-    ? SheetQueryConfigs<Rest, [_Configs, SheetQueryConfig<First>]>
-    : _Configs;
+    ? SheetQueryConfigs<Rest, [..._Result, SheetQueryConfig<First>]>
+    : Readonly<_Result>;
 
 type SheetRecord<
-    CTs extends ColumnTypes,
+    CTs extends ColumnTypes<readonly ColumnType<SheetHeader, TypeName>[]>,
     Record extends {
         [x: SheetHeader]: ToActualType<TypeName>;
     } = NonNullable<unknown>
 > = CTs extends [
-    infer CT extends ColumnType,
-    ...infer RestCTs extends ColumnTypes
+    infer CT extends ColumnType<SheetHeader, TypeName>,
+    ...infer RestCTs extends ColumnTypes<
+        readonly ColumnType<SheetHeader, TypeName>[]
+    >
 ]
     ? SheetRecord<
           RestCTs,
@@ -49,24 +76,26 @@ type SheetRecord<
       >
     : Readonly<Record>;
 
-type SheetQuery<CTs extends ColumnTypes> = {
+type SheetQuery<
+    CTs extends ColumnTypes<readonly ColumnType<SheetHeader, TypeName>[]>
+> = {
     /**
      * Read all records from the sheet.
      * @returns An array of all records in the sheet.
      */
-    read(): ReadonlyArray<SheetRecord<CTs>>;
+    read(): readonly SheetRecord<CTs>[];
 
     /**
      * Replace all records in the sheet.
      * @param records Records to be set.
      */
-    set(records: ReadonlyArray<SheetRecord<CTs>>): void;
+    set(records: readonly SheetRecord<CTs>[]): void;
 
     /**
      * Append records at the bottom of the sheet.
      * @param records Records to be appended.
      */
-    append(records: ReadonlyArray<SheetRecord<CTs>>): void;
+    append(records: readonly SheetRecord<CTs>[]): void;
 
     /**
      * Delete records based on the specified condition.
@@ -82,26 +111,41 @@ type SheetQuery<CTs extends ColumnTypes> = {
 };
 
 type SheetQueries<
-    CTsArray extends ReadonlyArray<ColumnTypes>,
-    _Queries = ReadonlyArray<SheetQuery<ColumnTypes>>
+    CTsArray extends readonly ColumnTypes<
+        readonly ColumnType<SheetHeader, TypeName>[]
+    >[],
+    _Queries = readonly SheetQuery<
+        ColumnTypes<readonly ColumnType<SheetHeader, TypeName>[]>
+    >[]
 > = CTsArray extends [
-    infer First extends ColumnTypes,
-    ...infer Rest extends ReadonlyArray<ColumnTypes>
+    infer First extends ColumnTypes<
+        readonly ColumnType<SheetHeader, TypeName>[]
+    >,
+    ...infer Rest extends readonly ColumnTypes<
+        readonly ColumnType<SheetHeader, TypeName>[]
+    >[]
 ]
     ? SheetQueries<Rest, [_Queries, SheetQuery<First>]>
     : _Queries;
 
-const createQueryConfig = <CTs extends ColumnTypes>(
+// ----
+
+const createQueryConfig = <
+    CTArray extends readonly ColumnType<SheetHeader, TypeName>[]
+>(
     id: number,
-    columnTypes: CTs
-): SheetQueryConfig<CTs> => {
-    return { id, columnTypes };
+    columnTypeArray: CTArray
+): SheetQueryConfig<CTArray> => {
+    return {
+        id,
+        columnTypes: columnTypeArray,
+    } as const;
 };
 
 const HEADER_REGEX = /^\s*(?:([^<]+)\s+<(string|number|boolean|Date)>)\s*$/;
 const validateColumnTypes = (
     sheetValues: DataTable,
-    columnTypes: ColumnTypes
+    columnTypes: ColumnTypes<readonly ColumnType<SheetHeader, TypeName>[]>
 ) => {
     const headers = sheetValues.slice(0, 1)[0];
     headers.forEach((rawHeader) => {
@@ -129,7 +173,7 @@ const validateColumnTypes = (
 };
 
 const createSheetQuery = <
-    CTs extends ColumnTypes,
+    CTs extends ColumnTypes<readonly ColumnType<SheetHeader, TypeName>[]>,
     QueryConfig extends SheetQueryConfig<CTs>
 >(
     { id, columnTypes }: QueryConfig,
@@ -186,15 +230,17 @@ const lock = LockService.getScriptLock();
 const sheets = SpreadsheetApp.getActive().getSheets();
 
 export const useSheetQuery = async <
-    T,
-    CTsArray extends ReadonlyArray<ColumnTypes>
+    CTsArray extends readonly ColumnTypes<
+        readonly ColumnType<SheetHeader, TypeName>[]
+    >[],
+    T
 >(
     proc: (query: SheetQueries<CTsArray>) => T,
     configs: SheetQueryConfigs<CTsArray>,
     options?: Partial<{
         timeouts: number;
     }>
-) => {
+): Promise<Awaited<Result<T, Error>>> => {
     const defaultOptions = {
         timeouts: 5000,
     } as const;
@@ -220,27 +266,47 @@ export const useSheetQuery = async <
     }
 };
 
+const createColumnType = <Header extends SheetHeader, Name extends TypeName>(
+    name: Header,
+    type: Name
+): ColumnType<Header, Name> => {
+    return { name, type } as const;
+};
+
+const createColumnTypes = <
+    CTArray extends readonly ColumnType<SheetHeader, TypeName>[]
+>(
+    ...columnTypes: CTArray
+): ColumnTypes<CTArray> => {
+    return columnTypes as unknown as ColumnTypes<CTArray>; // TODO
+};
+
 // example
 // -----------------------------
 
 const USER_SHEET_ID = 1000;
 const GROUP_SHEET_ID = 2000;
 
-const userQueryConfig = createQueryConfig(USER_SHEET_ID, [
-    { name: "User ID", type: "string" },
-    { name: "Group ID", type: "string" },
-    { name: "Name", type: "string" },
-    { name: "Age", type: "number" },
-    { name: "Is Employed", type: "boolean" },
-] as const);
+const USER_COLUMN_TYPES = createColumnTypes(
+    createColumnType("User ID", "string"),
+    createColumnType("Group ID", "string"),
+    createColumnType("Name", "string"),
+    createColumnType("Age", "number"),
+    createColumnType("Is Employed", "boolean")
+);
 
-const groupQueryConfig = createQueryConfig(GROUP_SHEET_ID, [
-    { name: "Group ID", type: "string" },
-    { name: "Name", type: "string" },
-    { name: "Ave. Grades", type: "number" },
-] as const);
+const GROUP_COLUMN_TYPES = createColumnTypes(
+    createColumnType("Group ID", "string"),
+    createColumnType("Name", "string"),
+    createColumnType("Ave. Grades", "number")
+);
 
-const bundle = [userQueryConfig, groupQueryConfig] as const;
+const userQueryConfig = createQueryConfig(USER_SHEET_ID, USER_COLUMN_TYPES);
+const groupQueryConfig = createQueryConfig(GROUP_SHEET_ID, GROUP_COLUMN_TYPES);
+
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+const bundle = createBundle(userQueryConfig, groupQueryConfig);
+
 // eslint-disable-next-line react-hooks/rules-of-hooks
 await useSheetQuery(([user, group]) => {
     user.read().forEach((v) => {
